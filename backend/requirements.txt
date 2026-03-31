@@ -1,0 +1,5 @@
+llama-index-core
+llama-index-llms-ollama
+llama-index-embeddings-huggingface
+llama-index-postprocessor-flag-embedding-reranker
+docling
