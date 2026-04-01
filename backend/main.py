@@ -1,11 +1,12 @@
 import os
 import json
+import time
 import chromadb
-from chromadb.utils import embedding_functions
 from pathlib import Path
 from openpyxl import load_workbook
 from pydantic import BaseModel, Field
 from llama_index.llms.ollama import Ollama
+from llama_index.embeddings.ollama import OllamaEmbedding
 
 # --- YOUR IMPORTS ---
 import read_checklist as checklist
@@ -32,13 +33,44 @@ class AuditVerdict(BaseModel):
     reasoning: str = Field(description="Brief reasoning")
     quote: str = Field(description="Exact quote from the snippet")
 
+# --- EMBEDDING MODEL ---
+class RobustOllamaEmbedding(OllamaEmbedding):
+    def _get_text_embeddings(self, texts):
+        results = []
+        for text in texts:
+            for attempt in range(3):
+                try:
+                    result = super()._get_text_embeddings([text])
+                    results.extend(result)
+                    time.sleep(0.1)
+                    break
+                except Exception as e:
+                    print(f"Embedding failed (attempt {attempt+1}): {e}")
+                    time.sleep(2 ** attempt)
+            else:
+                raise RuntimeError(f"Failed to embed text after 3 attempts: {text[:100]}")
+        return results
+
+class OllamaChromaEmbeddingFunction:
+    """ChromaDB-compatible wrapper around RobustOllamaEmbedding."""
+    def __init__(self):
+        self.model = RobustOllamaEmbedding(
+            model_name="nomic-ai/nomic-embed-text-v1.5",
+            base_url="http://localhost:11434",
+            ollama_additional_kwargs={"request_timeout": 1000.0},
+            embed_batch_size=1
+        )
+
+    def __call__(self, input):
+        return self.model.get_text_embedding_batch(input)
+
 # --- 1. MEMORY ENGINE (ChromaDB) ---
 CHROMA_DB_PATH = "./data/chroma_db"
 
 class LocalMemory:
     def __init__(self):
         self.client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-        self.embed_fn = embedding_functions.DefaultEmbeddingFunction()
+        self.embed_fn = OllamaChromaEmbeddingFunction()
 
     def index_text(self, project_name: str, full_text: str):
         """Splits text and saves to vector DB. Skips if collection already exists."""
