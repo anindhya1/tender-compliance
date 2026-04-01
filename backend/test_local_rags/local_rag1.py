@@ -26,15 +26,15 @@ class RobustOllamaEmbedding(OllamaEmbedding):
 Settings.embed_model = RobustOllamaEmbedding(
     model_name="nomic-embed-text",
     base_url="http://localhost:11434",
-    ollama_additional_kwargs={"request_timeout": 360.0},
+    ollama_additional_kwargs={"request_timeout": 1000.0},
     embed_batch_size=1
 )
 
 # 2. LLM
-Settings.llm = Ollama(model="mistral", request_timeout=360.0)
+Settings.llm = Ollama(model="mistral", request_timeout=1000.0)
 
 # 3. Chunk size
-Settings.node_parser = SentenceSplitter(chunk_size=256, chunk_overlap=20)
+Settings.node_parser = SentenceSplitter(chunk_size=400, chunk_overlap=25)
 
 # 4. Load + Index
 print("Loading documents...")
@@ -59,7 +59,7 @@ qa_prompt = PromptTemplate(
 
 query_engine = index.as_query_engine(
     text_qa_template=qa_prompt,
-    similarity_top_k=5
+    similarity_top_k=10
 )
-response = query_engine.query("What is the main purpose of this document?")
+response = query_engine.query("What is does tool_3_geographic do?")
 print(response)

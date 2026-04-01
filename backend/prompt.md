@@ -15,8 +15,8 @@ These are the official tender specification documents. They define the criteria,
 ### 2. Bidder Documents
 These are the documents submitted by the bidder in response to the tender. They may include certifications, financial statements, technical specifications, inspection reports, and other supporting evidence. These are the documents you evaluate.
 
-### 3. Requirement
-A single requirement from the Bid Qualification Criteria (BQC) checklist, identified by a unique ID and a description of what must be satisfied.
+### 3. BQC Requirements
+A dictionary of all requirements from the Bid Qualification Criteria (BQC) checklist. Each entry is identified by a unique ID (e.g. `"1.0"`, `"2.0"`) mapped to a description of what must be satisfied.
 
 ---
 
