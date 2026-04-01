@@ -24,8 +24,6 @@ LLM_TEMPERATURE = 0.1
 CHUNK_SIZE = 1000       
 RETRIEVAL_COUNT = 25     
 
-# Excel Column Definitions
-COL_ID = 1; COL_REQ = 2; COL_STATUS = 3; COL_EVIDENCE = 4
 
 # --- PYDANTIC MODELS ---
 class AuditVerdict(BaseModel):
@@ -195,13 +193,7 @@ def main():
     else:
         print(f"   [Warning] Tender docs folder not found: {TENDER_DOCS_ROOT}")
 
-    # 5. Prepare combined workbook
-    out_path = os.path.join(OUTPUT_DIR, "Report_All.xlsx")
-    wb = load_workbook(CHECKLIST_PATH)
-    template_ws = wb.active
-    template_ws.title = "_template"
-
-    # 6. Load tender-docs collection for all audits
+    # 5. Load tender-docs collection for all audits
     try:
         tender_collection = memory.client.get_collection("tender-docs", embedding_function=memory.embed_fn)
     except Exception as e:
@@ -222,41 +214,25 @@ def main():
             print(f"   [Error] Indexing failed: {e}")
             continue
 
-        # B. Add a sheet for this project (copy of template)
-        ws = wb.copy_worksheet(template_ws)
-        ws.title = folder.name[:31]  # Excel sheet names max 31 chars
-
         print(f"   Auditing requirements...", end="", flush=True)
 
-        # C. The Hybrid Loop
-        # We iterate Excel rows to find WHERE to write,
-        # but we use rubric_dict to decide WHAT to write.
-        for row in ws.iter_rows(min_row=2):
-            cell_id_val = row[COL_ID - 1].value
+        # B. Audit Loop — iterate rubric directly
+        results = {}
+        for req_id, req_text in rubric_dict.items():
+            verdict = audit_single_requirement(llm, bidder_collection, tender_collection, req_id, req_text)
+            results[req_id] = {
+                "requirement": req_text,
+                "status": verdict.status,
+                "reasoning": verdict.reasoning,
+                "quote": verdict.quote
+            }
+            print(".", end="", flush=True)
 
-            if cell_id_val:
-                req_id = str(cell_id_val)
-
-                # CHECK: Is this ID in our valid dictionary?
-                if req_id in rubric_dict:
-                    # Use text from Dictionary (Source of Truth)
-                    req_text = rubric_dict[req_id]
-
-                    # Run Audit
-                    verdict = audit_single_requirement(llm, bidder_collection, tender_collection, req_id, req_text)
-
-                    # Write to Excel
-                    row[COL_STATUS - 1].value = verdict.status
-                    row[COL_EVIDENCE - 1].value = f"{verdict.reasoning}\n\nRef: \"{verdict.quote}\""
-
-                    print(".", end="", flush=True)
-
-        print(f"\nSheet added: {folder.name}")
-
-    # 8. Remove template sheet and save combined report
-    wb.remove(template_ws)
-    wb.save(out_path)
-    print(f"\n Combined report saved: {out_path}")
+        # C. Save results to JSON immediately (one file per bidder)
+        json_path = os.path.join(OUTPUT_DIR, f"{folder.name}.json")
+        with open(json_path, "w") as f:
+            json.dump(results, f, indent=2)
+        print(f"\n   Results saved: {json_path}")
 
 if __name__ == "__main__":
     main()
