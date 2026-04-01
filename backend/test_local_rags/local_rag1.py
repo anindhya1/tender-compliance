@@ -1,8 +1,10 @@
-from llama_index.core import VectorStoreIndex, Settings, PromptTemplate, Document
+from llama_index.core import VectorStoreIndex, Settings, PromptTemplate, Document, StorageContext
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.core.node_parser import SentenceSplitter
+from llama_index.vector_stores.chroma import ChromaVectorStore
 from docling.document_converter import DocumentConverter
+import chromadb
 import time
 
 # 1. Embeddings
@@ -44,8 +46,17 @@ text = result.document.export_to_markdown()
 documents = [Document(text=text)]
 print(f"Loaded document with {len(text)} characters")
 
-print("Embedding documents (this may take time)...")
-index = VectorStoreIndex.from_documents(documents, show_progress=True)
+chroma_client = chromadb.PersistentClient(path="../data/chroma_db")
+chroma_collection = chroma_client.get_or_create_collection("knowledge-transfer")
+vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+if chroma_collection.count() > 0:
+    print("Loading existing index from ChromaDB...")
+    index = VectorStoreIndex.from_vector_store(vector_store)
+else:
+    print("Embedding documents (this may take time)...")
+    index = VectorStoreIndex.from_documents(documents, storage_context=storage_context, show_progress=True)
 
 # 5. Query
 print("Querying...")

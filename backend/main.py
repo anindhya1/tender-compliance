@@ -44,10 +44,10 @@ class LocalMemory:
         """Splits text and saves to vector DB. Skips if collection already exists."""
         existing = [c.name for c in self.client.list_collections()]
         if project_name in existing:
-            print(f"    ⚙️ Loading existing index for '{project_name}'...")
+            print(f"    Loading existing index for '{project_name}'...")
             return self.client.get_collection(project_name, embedding_function=self.embed_fn)
 
-        print(f"    ⚙️ Indexing '{project_name}' for the first time...")
+        print(f"    Indexing '{project_name}' for the first time...")
         collection = self.client.create_collection(
             name=project_name,
             embedding_function=self.embed_fn
