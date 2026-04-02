@@ -2,17 +2,10 @@ import os
 import json
 import time
 import chromadb
-import asyncio
-import nest_asyncio
-nest_asyncio.apply()
 from pathlib import Path
 from openpyxl import load_workbook
-from functools import partial
 from pydantic import BaseModel, Field
 from llama_index.llms.ollama import Ollama
-from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.core.tools import FunctionTool
-from llama_index.core.agent import FunctionAgent, AgentWorkflow
 
 # --- YOUR IMPORTS ---
 import read_checklist as checklist
@@ -93,36 +86,29 @@ class LocalMemory:
 
 # --- 2. AI AUDITOR ---
 def audit_single_requirement(llm: Ollama, bidder_name: str, req_id: str, req_text: str) -> AuditVerdict:
-    # Build two scoped tools for this bidder
-    def query_tender_docs(query: str) -> str:
-        """Query the tender documents to understand what a requirement means."""
-        return rag.query_collection("tender-docs", query, CHROMA_DB_PATH)
-
-    def query_bidder_docs(query: str) -> str:
-        """Query the bidder's documents to find evidence for a requirement."""
-        return rag.query_collection(bidder_name, query, CHROMA_DB_PATH)
-
-    tender_tool = FunctionTool.from_defaults(fn=query_tender_docs)
-    bidder_tool = FunctionTool.from_defaults(fn=query_bidder_docs)
-
-    agent = FunctionAgent(
-        name="auditor",
-        tools=[tender_tool, bidder_tool],
-        llm=llm,
-        system_prompt="You are a strict Compliance Auditor."
-    )
-    workflow = AgentWorkflow(agents=[agent], root_agent="auditor")
+    # Retrieve context directly via rag.py
+    tender_snippets = rag.query_collection("tender-docs", req_text, CHROMA_DB_PATH)
+    bidder_snippets = rag.query_collection(bidder_name, req_text, CHROMA_DB_PATH)
 
     prompt = f"""
-    TASK: Check if the bidder's documents satisfy the requirement below.
+    You are a strict Compliance Auditor.
+    TASK: Check if the BIDDER DOCUMENTS satisfy the REQUIREMENT.
 
     REQUIREMENT ({req_id}): "{req_text}"
 
+    TENDER CONTEXT (what this requirement means):
+    {tender_snippets}
+
+    BIDDER DOCUMENTS (evidence to evaluate):
+    {bidder_snippets}
+
     INSTRUCTIONS:
-    1. Use the query_tender_docs tool to understand what the requirement means.
-    2. Use the query_bidder_docs tool to find evidence in the bidder's documents.
-    3. Evaluate the evidence strictly against the requirement.
-    4. Respond ONLY with valid JSON in this exact format:
+    1. Use the TENDER CONTEXT to understand what the requirement is asking for.
+    2. Evaluate the BIDDER DOCUMENTS strictly against that requirement.
+    3. If the bidder's documents satisfy the requirement, Status is 'Pass'.
+    4. If the bidder's documents contradict or fail the requirement, Status is 'Fail'.
+    5. If there is no relevant evidence in the bidder's documents, Status is 'N/A'.
+    6. Respond ONLY with valid JSON.
     {{
         "status": "Pass" | "Fail" | "N/A",
         "reasoning": "brief explanation",
@@ -130,12 +116,9 @@ def audit_single_requirement(llm: Ollama, bidder_name: str, req_id: str, req_tex
     }}
     """
 
-    async def _run():
-        return await workflow.run(user_msg=prompt, max_iterations=10)
-
     try:
-        response = asyncio.run(_run())
-        raw = str(response).strip()
+        response = llm.complete(prompt)
+        raw = response.text.strip()
 
         print(f"\n[RAW LLM RESPONSE - {req_id}]\n{raw}\n[END]\n")
 
