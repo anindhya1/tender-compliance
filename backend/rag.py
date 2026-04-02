@@ -1,11 +1,10 @@
-from llama_index.core import VectorStoreIndex, Settings, PromptTemplate
-from llama_index.llms.ollama import Ollama
+from llama_index.core import VectorStoreIndex, Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
 import time
 
-# 1. Embeddings
+
 class RobustOllamaEmbedding(OllamaEmbedding):
     def _get_text_embeddings(self, texts):
         results = []
@@ -23,37 +22,24 @@ class RobustOllamaEmbedding(OllamaEmbedding):
                 raise RuntimeError(f"Failed to embed text after 3 attempts: {text[:100]}")
         return results
 
-Settings.embed_model = RobustOllamaEmbedding(
-    model_name="nomic-embed-text",
-    base_url="http://localhost:11434",
-    ollama_additional_kwargs={"request_timeout": 1000.0},
-    embed_batch_size=1
-)
 
-# 2. LLM
-Settings.llm = Ollama(model="mistral", request_timeout=1000.0)
+def setup_settings(llm):
+    """Configure llama_index global Settings. Call once before querying."""
+    Settings.embed_model = RobustOllamaEmbedding(
+        model_name="nomic-embed-text",
+        base_url="http://localhost:11434",
+        ollama_additional_kwargs={"request_timeout": 1000.0},
+        embed_batch_size=1
+    )
+    Settings.llm = llm
 
-# 3. Load index from existing ChromaDB
-print("Loading index from ChromaDB...")
-chroma_client = chromadb.PersistentClient(path="../data/chroma_db")
-chroma_collection = chroma_client.get_collection("knowledge-transfer")
-vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-index = VectorStoreIndex.from_vector_store(vector_store)
-print("Index loaded.")
 
-# 4. Query
-print("Querying...")
-qa_prompt = PromptTemplate(
-    "You are a helpful assistant. Use ONLY the context below to answer the question. "
-    "Do not say you cannot read the file.\n\n"
-    "Context:\n{context_str}\n\n"
-    "Question: {query_str}\n"
-    "Answer:"
-)
-
-query_engine = index.as_query_engine(
-    text_qa_template=qa_prompt,
-    similarity_top_k=10
-)
-response = query_engine.query("What is does tool_3_geographic do?")
-print(response)
+def query_collection(collection_name: str, query: str, chroma_db_path: str) -> str:
+    """Query a ChromaDB collection and return the response as a string."""
+    chroma_client = chromadb.PersistentClient(path=chroma_db_path)
+    chroma_collection = chroma_client.get_collection(collection_name)
+    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+    index = VectorStoreIndex.from_vector_store(vector_store)
+    query_engine = index.as_query_engine(similarity_top_k=10)
+    response = query_engine.query(query)
+    return str(response)

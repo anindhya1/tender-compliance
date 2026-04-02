@@ -2,15 +2,22 @@ import os
 import json
 import time
 import chromadb
+import asyncio
+import nest_asyncio
+nest_asyncio.apply()
 from pathlib import Path
 from openpyxl import load_workbook
+from functools import partial
 from pydantic import BaseModel, Field
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.core.tools import FunctionTool
+from llama_index.core.agent import FunctionAgent, AgentWorkflow
 
 # --- YOUR IMPORTS ---
 import read_checklist as checklist
 import convert_to_md as markdown
+import rag
 
 # --- CONFIGURATION ---
 CHECKLIST_PATH = "data/checklist/bqc-checklist.xlsx"
@@ -21,8 +28,7 @@ OUTPUT_DIR = "./data/reports"
 # AI Settings
 LLM_MODEL = "mistral"
 LLM_TEMPERATURE = 0.1
-CHUNK_SIZE = 1000       
-RETRIEVAL_COUNT = 25     
+CHUNK_SIZE = 1000
 
 
 # --- PYDANTIC MODELS ---
@@ -32,28 +38,11 @@ class AuditVerdict(BaseModel):
     quote: str = Field(description="Exact quote from the snippet")
 
 # --- EMBEDDING MODEL ---
-class RobustOllamaEmbedding(OllamaEmbedding):
-    def _get_text_embeddings(self, texts):
-        results = []
-        for text in texts:
-            for attempt in range(3):
-                try:
-                    result = super()._get_text_embeddings([text])
-                    results.extend(result)
-                    time.sleep(0.1)
-                    break
-                except Exception as e:
-                    print(f"Embedding failed (attempt {attempt+1}): {e}")
-                    time.sleep(2 ** attempt)
-            else:
-                raise RuntimeError(f"Failed to embed text after 3 attempts: {text[:100]}")
-        return results
-
 class OllamaChromaEmbeddingFunction:
-    """ChromaDB-compatible wrapper around RobustOllamaEmbedding."""
+    """ChromaDB-compatible wrapper around RobustOllamaEmbedding (defined in rag.py)."""
     def __init__(self):
-        self.model = RobustOllamaEmbedding(
-            model_name="nomic-ai/nomic-embed-text-v1.5",
+        self.model = rag.RobustOllamaEmbedding(
+            model_name="nomic-embed-text",
             base_url="http://localhost:11434",
             ollama_additional_kwargs={"request_timeout": 1000.0},
             embed_batch_size=1
@@ -75,7 +64,7 @@ class LocalMemory:
         existing = [c.name for c in self.client.list_collections()]
         if project_name in existing:
             print(f"    Loading existing index for '{project_name}'...")
-            return self.client.get_collection(project_name, embedding_function=self.embed_fn)
+            return self.client.get_collection(project_name)
 
         print(f"    Indexing '{project_name}' for the first time...")
         collection = self.client.create_collection(
@@ -103,45 +92,50 @@ class LocalMemory:
         return collection
 
 # --- 2. AI AUDITOR ---
-def audit_single_requirement(llm: Ollama, bidder_collection, tender_collection, req_id: str, req_text: str) -> AuditVerdict:
-    # Retrieve tender context (what the requirement means)
-    tender_results = tender_collection.query(query_texts=[req_text], n_results=RETRIEVAL_COUNT)
-    tender_snippets = "\n---\n".join(tender_results['documents'][0])
+def audit_single_requirement(llm: Ollama, bidder_name: str, req_id: str, req_text: str) -> AuditVerdict:
+    # Build two scoped tools for this bidder
+    def query_tender_docs(query: str) -> str:
+        """Query the tender documents to understand what a requirement means."""
+        return rag.query_collection("tender-docs", query, CHROMA_DB_PATH)
 
-    # Retrieve bidder evidence
-    bidder_results = bidder_collection.query(query_texts=[req_text], n_results=RETRIEVAL_COUNT)
-    bidder_snippets = "\n---\n".join(bidder_results['documents'][0])
+    def query_bidder_docs(query: str) -> str:
+        """Query the bidder's documents to find evidence for a requirement."""
+        return rag.query_collection(bidder_name, query, CHROMA_DB_PATH)
 
-    # Prompt
+    tender_tool = FunctionTool.from_defaults(fn=query_tender_docs)
+    bidder_tool = FunctionTool.from_defaults(fn=query_bidder_docs)
+
+    agent = FunctionAgent(
+        name="auditor",
+        tools=[tender_tool, bidder_tool],
+        llm=llm,
+        system_prompt="You are a strict Compliance Auditor."
+    )
+    workflow = AgentWorkflow(agents=[agent], root_agent="auditor")
+
     prompt = f"""
-    You are a strict Compliance Auditor.
-    TASK: Check if the BIDDER DOCUMENTS satisfy the REQUIREMENT.
+    TASK: Check if the bidder's documents satisfy the requirement below.
 
     REQUIREMENT ({req_id}): "{req_text}"
 
-    TENDER CONTEXT (what this requirement means):
-    {tender_snippets}
-
-    BIDDER DOCUMENTS (evidence to evaluate):
-    {bidder_snippets}
-
     INSTRUCTIONS:
-    1. Use the TENDER CONTEXT to understand what the requirement is asking for.
-    2. Evaluate the BIDDER DOCUMENTS strictly against that requirement.
-    3. If the bidder's documents satisfy the requirement, Status is 'Pass'.
-    4. If the bidder's documents contradict or fail the requirement, Status is 'Fail'.
-    5. If there is no relevant evidence in the bidder's documents, Status is 'N/A'.
-    6. Respond ONLY with valid JSON.
+    1. Use the query_tender_docs tool to understand what the requirement means.
+    2. Use the query_bidder_docs tool to find evidence in the bidder's documents.
+    3. Evaluate the evidence strictly against the requirement.
+    4. Respond ONLY with valid JSON in this exact format:
     {{
         "status": "Pass" | "Fail" | "N/A",
         "reasoning": "brief explanation",
         "quote": "exact text from bidder documents"
     }}
     """
-    
+
+    async def _run():
+        return await workflow.run(user_msg=prompt, max_iterations=10)
+
     try:
-        response = llm.complete(prompt)
-        raw = response.text.strip()
+        response = asyncio.run(_run())
+        raw = str(response).strip()
 
         print(f"\n[RAW LLM RESPONSE - {req_id}]\n{raw}\n[END]\n")
 
@@ -154,7 +148,7 @@ def audit_single_requirement(llm: Ollama, bidder_collection, tender_collection, 
             start = raw.find("{")
             end = raw.rfind("}") + 1
             raw = raw[start:end]
-            
+
         data = json.loads(raw)
         return AuditVerdict(**data)
     except Exception as e:
@@ -175,6 +169,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     memory = LocalMemory()
     llm = Ollama(model=LLM_MODEL, temperature=LLM_TEMPERATURE, request_timeout=1000.0)
+    rag.setup_settings(llm)
     evidence_root = Path(EVIDENCE_ROOT)
 
     # 3. Index tender docs into a single collection
@@ -193,14 +188,8 @@ def main():
     else:
         print(f"   [Warning] Tender docs folder not found: {TENDER_DOCS_ROOT}")
 
-    # 5. Load tender-docs collection for all audits
-    try:
-        tender_collection = memory.client.get_collection("tender-docs", embedding_function=memory.embed_fn)
-    except Exception as e:
-        print(f"CRITICAL: Could not load tender-docs collection: {e}")
-        return
-
-    # 7. Iterate Projects
+    # 5. Iterate Projects
+    all_results = {}
     for folder in [f for f in evidence_root.iterdir() if f.is_dir()]:
         print(f"\n--- Processing: {folder.name} ---")
 
@@ -209,7 +198,7 @@ def main():
         if not context_text: continue
 
         try:
-            bidder_collection = memory.index_text(folder.name, context_text)
+            memory.index_text(folder.name, context_text)
         except Exception as e:
             print(f"   [Error] Indexing failed: {e}")
             continue
@@ -219,7 +208,7 @@ def main():
         # B. Audit Loop — iterate rubric directly
         results = {}
         for req_id, req_text in rubric_dict.items():
-            verdict = audit_single_requirement(llm, bidder_collection, tender_collection, req_id, req_text)
+            verdict = audit_single_requirement(llm, folder.name, req_id, req_text)
             results[req_id] = {
                 "requirement": req_text,
                 "status": verdict.status,
@@ -233,6 +222,14 @@ def main():
         with open(json_path, "w") as f:
             json.dump(results, f, indent=2)
         print(f"\n   Results saved: {json_path}")
+
+        all_results[folder.name] = results
+
+    # 8. Save combined JSON for all bidders
+    combined_path = os.path.join(OUTPUT_DIR, "all_results.json")
+    with open(combined_path, "w") as f:
+        json.dump(all_results, f, indent=2)
+    print(f"\n Combined results saved: {combined_path}")
 
 if __name__ == "__main__":
     main()
