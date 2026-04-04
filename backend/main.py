@@ -91,8 +91,8 @@ class LocalMemory:
 # --- 2. AI AUDITOR ---
 def audit_single_requirement(llm: Ollama, bidder_name: str, req_id: str, req_text: str) -> AuditVerdict:
     # Retrieve context directly via rag.py
-    tender_snippets = rag.query_collection("tender-docs", req_text, CHROMA_DB_PATH)
-    bidder_snippets = rag.query_collection(bidder_name, req_text, CHROMA_DB_PATH)
+    tender_snippets = rag.query_collection("tender-docs", "Retrieve all the tender documents in order to understand the context of the individual requirements.", CHROMA_DB_PATH)
+    bidder_snippets = rag.query_collection(bidder_name, f"Retrieve all the bidder documents for the bidder {bidder_name} in order to evaluate whether the bidder satisfies the requirement {req_text}.", CHROMA_DB_PATH)
 
     prompt = f"""
     {SYSTEM_PROMPT}
