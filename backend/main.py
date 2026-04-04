@@ -17,11 +17,15 @@ CHECKLIST_PATH = "data/checklist/bqc-checklist.xlsx"
 EVIDENCE_ROOT = "./data/markdown/01_md/bidder-docs"
 TENDER_DOCS_ROOT = "./data/markdown/01_md/tender-docs"
 OUTPUT_DIR = "./data/reports"
+PROMPT_PATH = "./prompt.md"
 
 # AI Settings
 LLM_MODEL = "mistral"
 LLM_TEMPERATURE = 0.1
 CHUNK_SIZE = 1000
+
+with open(PROMPT_PATH, "r") as f:
+    SYSTEM_PROMPT = f.read()
 
 
 # --- PYDANTIC MODELS ---
@@ -91,29 +95,17 @@ def audit_single_requirement(llm: Ollama, bidder_name: str, req_id: str, req_tex
     bidder_snippets = rag.query_collection(bidder_name, req_text, CHROMA_DB_PATH)
 
     prompt = f"""
-    You are a strict Compliance Auditor.
-    TASK: Check if the BIDDER DOCUMENTS satisfy the REQUIREMENT.
+    {SYSTEM_PROMPT}
+
+    ---
 
     REQUIREMENT ({req_id}): "{req_text}"
 
-    TENDER CONTEXT (what this requirement means):
+    TENDER CONTEXT:
     {tender_snippets}
 
-    BIDDER DOCUMENTS (evidence to evaluate):
+    BIDDER DOCUMENTS:
     {bidder_snippets}
-
-    INSTRUCTIONS:
-    1. Use the TENDER CONTEXT to understand what the requirement is asking for.
-    2. Evaluate the BIDDER DOCUMENTS strictly against that requirement.
-    3. If the bidder's documents satisfy the requirement, Status is 'Pass'.
-    4. If the bidder's documents contradict or fail the requirement, Status is 'Fail'.
-    5. If there is no relevant evidence in the bidder's documents, Status is 'N/A'.
-    6. Respond ONLY with valid JSON.
-    {{
-        "status": "Pass" | "Fail" | "N/A",
-        "reasoning": "brief explanation",
-        "quote": "exact text from bidder documents"
-    }}
     """
 
     try:
